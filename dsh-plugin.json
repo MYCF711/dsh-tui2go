@@ -1,0 +1,67 @@
+{
+  "$schema": "urn:dsh-std:community-draft:dsh-plugin:0.15",
+  "manifestVersion": "0.15",
+  "id": "dsh-tui2go",
+  "name": "DSH-GO TUI Backend",
+  "version": "0.1.0",
+  "facets": {
+    "host": {
+      "entry": "lib/index.js",
+      "apiVersion": "v1alpha1"
+    }
+  },
+  "requires": {
+    "contracts": []
+  },
+  "permissions": [],
+  "contributes": {
+    "commands": [],
+    "x-dsh-tui": [
+      {
+        "apiVersion": "tui.dsh/v1alpha1",
+        "kind": "Backend",
+        "id": "dsh-tui2go",
+        "name": "dsh_go_backend",
+        "spec": {
+          "id": "dsh-go",
+          "label": {
+            "text": "DSH-GO"
+          },
+          "shortLabel": "DSH-GO",
+          "product": "dshd",
+          "capabilities": [
+            "native",
+            "permissions",
+            "questions",
+            "pendingRetraction",
+            "models",
+            "effort",
+            "modes",
+            "goals",
+            "compact",
+            "fork",
+            "rewind",
+            "tasks",
+            "subagents",
+            "images",
+            "transcript",
+            "context",
+            "mcp",
+            "sideQuery",
+            "auth",
+            "rename",
+            "color",
+            "init"
+          ],
+          "grants": [],
+          "unloadExport": "closeDshGoPool"
+        }
+      }
+    ]
+  },
+  "subscriptions": [],
+  "license": "MIT",
+  "source": {
+    "repository": "https://github.com/MYCF711/dsh-tui2go"
+  }
+}

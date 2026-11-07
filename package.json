@@ -1,0 +1,62 @@
+{
+  "name": "dsh-tui2go",
+  "version": "0.1.0",
+  "description": "DSH-GO (dshd) AgentBackend bundle for dsh-TUI 0.19",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "package.json",
+    "lib",
+    "dsh-plugin.json",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-tui",
+    "dsh-plugin",
+    "dsh-tui-plugin",
+    "dsh-go",
+    "agent-backend"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MYCF711/dsh-tui2go.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run build",
+    "test": "node --import tsx/esm --test --test-concurrency=1 test/unit/*.test.ts"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0",
+    "tsx": "^4.23.15"
+  }
+}
