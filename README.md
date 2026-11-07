@@ -57,8 +57,8 @@ npm test
 npm pack --dry-run
 ```
 
-The assembly checks use the real published 0.19 declaration validator; they do
-not mock the TUI chain.
+The public suite is unit-level and runs without a local 0.19 checkout. Real
+0.19 assembly/conformance evidence is kept out of the public repository.
 
 ## Status
 
