@@ -51,7 +51,8 @@
             "auth",
             "rename",
             "color",
-            "init"
+            "init",
+            "workspace"
           ],
           "grants": [],
           "unloadExport": "closeDshGoPool"

@@ -22,7 +22,8 @@
     "dsh-plugin.json",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "launcher"
   ],
   "dsh": {
     "bundle": {
@@ -48,7 +49,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "npm run build",
-    "test": "node --import tsx/esm --test --test-concurrency=1 test/unit/*.test.ts"
+    "test": "node --import tsx/esm --test --test-concurrency=1 test/unit/*.test.ts",
+    "install-play": "node launcher/install-play.mjs --build --ensure",
+    "restore-play": "node launcher/install-play.mjs --restore"
   },
   "dependencies": {
     "ws": "^8.21.3"
