@@ -51,6 +51,7 @@ export const manifest: LocalBackendManifest = {
     'rename',
     'color',
     'init',
+    'workspace',
   ],
   grants: [],
   unloadExport: 'closeDshGoPool',

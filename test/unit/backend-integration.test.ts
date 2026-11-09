@@ -154,7 +154,10 @@ class IntegrationHost {
   private async invoke(method: string, params: Readonly<Record<string, unknown>>): Promise<unknown> {
     this.calls.push({ method, params })
     if (method === 'session.create') return { sessionId: 'A' }
+    if (method === 'workspace.resolve') return { workspace: undefined }
+    if (method === 'workspace.create') return { workspace: { workspaceId: 'w', path: String(params.request?.path ?? ''), title: 'w' } }
     if (method === 'session.load') return this.load
+    if (method === 'session.setPermission') { this.load = { ...this.load, permission: params.permission as string }; return { ok: true } }
     if (method === 'session.list') {
       return { sessions: [{ id: 'A', title: this.title, titleExplicit: true, titleSource: 'user', cwd: CWD, updatedAt: '2026-11-06T00:00:00Z' }] }
     }
@@ -266,7 +269,7 @@ test('backend integrates durable capabilities, image submission, event owners an
 
   assert.deepEqual(Object.keys(session.capabilities).sort(), [
     'auth', 'color', 'compact', 'context', 'effort', 'fork', 'goals', 'images', 'init', 'mcp', 'models', 'modes',
-    'native', 'pendingRetraction', 'permissions', 'questions', 'rename', 'rewind', 'sideQuery', 'subagents', 'tasks', 'transcript',
+    'native', 'pendingRetraction', 'permissions', 'questions', 'rename', 'rewind', 'sideQuery', 'subagents', 'tasks', 'transcript', 'workspace',
   ])
   for (const present of ['mcp', 'sideQuery', 'rename', 'color', 'init']) assert.equal(manifest.capabilities?.includes(present), true)
 

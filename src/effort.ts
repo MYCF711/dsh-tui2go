@@ -1,3 +1,4 @@
+import { dshGoLocale, effortLabel } from './i18n.js'
 import type { EffortOption, ModelRef, SessionCapabilities } from './types/agent/capabilities.js'
 import type { AgentEvent } from './types/agent/events.js'
 
@@ -16,7 +17,8 @@ export interface DshGoEffortBaseline {
 
 type CatalogRow = {
   readonly id: string
-  readonly levels: readonly EffortOption[]
+  /** Declared level ids in catalog order; labels are resolved at read time. */
+  readonly levels: readonly string[]
   /** The row's own declared default tier, already checked against its levels. */
   readonly defaultEffort?: string
 }
@@ -40,7 +42,7 @@ function catalogRows(value: unknown): ReadonlyMap<string, CatalogRow> {
     const id = nonEmpty(row?.id)
     if (row === undefined || id === undefined) continue
     const declaration = row.reasoningEfforts
-    const levels: EffortOption[] = []
+    const levels: string[] = []
     if (declaration !== false && declaration !== undefined) {
       const efforts = record(declaration)
       if (efforts === undefined) throw new Error(`dsh-go: model ${JSON.stringify(id)} has invalid reasoningEfforts`)
@@ -51,7 +53,7 @@ function catalogRows(value: unknown): ReadonlyMap<string, CatalogRow> {
         if (level === 'off' ? wireValue !== null && nonEmpty(wireValue) === undefined : nonEmpty(wireValue) === undefined) {
           throw new Error(`dsh-go: model ${JSON.stringify(id)} has an invalid effort wire value`)
         }
-        levels.push({ id: level, label: level })
+        levels.push(level)
       }
     }
     // The default tier is the row's own declaration (the sibling codex backend
@@ -63,7 +65,7 @@ function catalogRows(value: unknown): ReadonlyMap<string, CatalogRow> {
     let defaultEffort: string | undefined
     if (declaredDefault !== undefined) {
       const value = nonEmpty(declaredDefault)
-      if (value === undefined || !levels.some(option => option.id === value)) {
+      if (value === undefined || !levels.includes(value)) {
         throw new Error(`dsh-go: model ${JSON.stringify(id)} has an invalid default effort`)
       }
       defaultEffort = value
@@ -80,7 +82,7 @@ function catalogRows(value: unknown): ReadonlyMap<string, CatalogRow> {
 export function createDshGoEffort(
   transport: DshGoEffortTransport,
   sessionId: string,
-  options: { emit?(events: readonly AgentEvent[]): void } = {},
+  options: { emit?(events: readonly AgentEvent[]): void; locale?(): string } = {},
 ) {
   let rows: ReadonlyMap<string, CatalogRow> = new Map()
   let available = false
@@ -88,7 +90,13 @@ export function createDshGoEffort(
   let effort: string | undefined
 
   const rowFor = (ref: ModelRef): CatalogRow | undefined => rows.get(ref.model)
-  const levelsFor = (ref: ModelRef): readonly EffortOption[] => rowFor(ref)?.levels ?? []
+  // Labels are resolved per read, not per refresh: the host's `locale()` is
+  // live, so a `/lang` switch relabels the ladder on the next render instead of
+  // waiting for the next catalog refresh (which may never come).
+  const levelsFor = (ref: ModelRef): readonly EffortOption[] => {
+    const locale = dshGoLocale(options.locale)
+    return (rowFor(ref)?.levels ?? []).map(id => ({ id, label: effortLabel(id, locale) }))
+  }
   const capability: NonNullable<SessionCapabilities['effort']> = {
     get levelsAvailable() { return available },
     levels: () => levelsFor({ model }),

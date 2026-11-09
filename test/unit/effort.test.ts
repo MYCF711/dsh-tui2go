@@ -40,8 +40,8 @@ test('effort reads the model catalog, current baseline and per-model preview', a
   helper.seed({ model: 'model-a', effort: 'low', effortSelection: 'high' })
   assert.equal(capability.levelsAvailable, true)
   assert.deepEqual(capability.levels(), [
-    { id: 'off', label: 'off' }, { id: 'low', label: 'low' },
-    { id: 'high', label: 'high' }, { id: 'max', label: 'max' },
+    { id: 'off', label: '关闭' }, { id: 'low', label: '低' },
+    { id: 'high', label: '高' }, { id: 'max', label: '最高' },
   ])
   assert.equal(capability.current(), 'high')
   assert.deepEqual(capability.forModel?.({ model: 'model-a' }), {
@@ -148,11 +148,11 @@ test('the declared default effort tier is surfaced, a missing one is never fabri
   const helper = createDshGoEffort(transport, 'session-a')
   await helper.refresh()
   assert.deepEqual(helper.capability.forModel?.({ model: 'model-default' }), {
-    levels: [{ id: 'off', label: 'off' }, { id: 'low', label: 'low' }, { id: 'high', label: 'high' }],
+    levels: [{ id: 'off', label: '关闭' }, { id: 'low', label: '低' }, { id: 'high', label: '高' }],
     defaultEffort: 'high',
   })
   assert.deepEqual(helper.capability.forModel?.({ model: 'model-nodefault' }), {
-    levels: [{ id: 'low', label: 'low' }],
+    levels: [{ id: 'low', label: '低' }],
     defaultEffort: undefined,
   })
   // A real selection still wins over the declared default; the default is only
@@ -175,4 +175,22 @@ test('an illegal default effort tier fails loudly and leaves the catalog unloade
     await assert.rejects(helper.capability.set('low'), /catalog is not loaded/)
     assert.deepEqual(calls, [{ method: 'models.catalog.list', params: {} }])
   }
+})
+
+test('effort labels follow the host locale without a second catalog refresh', async () => {
+  const { calls, transport } = fixture(() => catalog)
+  let locale = 'zh'
+  const helper = createDshGoEffort(transport, 'session-a', { locale: () => locale })
+  await helper.refresh()
+  helper.seed({ model: 'model-a' })
+  assert.deepEqual(helper.capability.levels(), [
+    { id: 'off', label: '关闭' }, { id: 'low', label: '低' },
+    { id: 'high', label: '高' }, { id: 'max', label: '最高' },
+  ])
+  locale = 'en'
+  assert.deepEqual(helper.capability.levels(), [
+    { id: 'off', label: 'Off' }, { id: 'low', label: 'Low' },
+    { id: 'high', label: 'High' }, { id: 'max', label: 'Max' },
+  ])
+  assert.deepEqual(calls, [{ method: 'models.catalog.list', params: {} }])
 })

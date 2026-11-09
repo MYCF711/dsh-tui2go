@@ -50,6 +50,7 @@ import { createDshGoImages } from './images.js'
 import { createDshGoInitCapability } from './init.js'
 import { createDshGoMcpCapability } from './mcp.js'
 import { createDshGoModes } from './modes.js'
+import { createDshGoWorkspacePort, installDshGoWorkspacePort, type DshGoWorkspacePort } from './workspace.js'
 import { createDshGoPlacement, type DshGoPlacement } from './placement.js'
 import { createDshGoRename, dshGoTitleChange } from './rename.js'
 import { createDshGoIndependentSideQueryRunner, createDshGoSideQuery } from './side-query.js'
@@ -61,7 +62,7 @@ import {
 import { createDshGoSubagents } from './subagents.js'
 import { createDshGoTasks } from './tasks.js'
 import { readDshGoTranscriptPages } from './trajectory-history.js'
-import { DshGoLaunch, DshGoTransport, type ServerFrame, type SessionLoad, type SessionTransport } from './transport.js'
+import { DshGoLaunch, DshGoTransport, debugLog, type ServerFrame, type SessionLoad, type SessionTransport } from './transport.js'
 
 export const DSH_GO_BACKEND_ID = 'dsh-go'
 export const DSH_GO_BACKEND_LABEL = 'DSH-GO'
@@ -72,6 +73,7 @@ export interface DshGoSupervisor {
   readonly broken?: boolean
   onExit?(listener: (error: Error) => void): () => void
   close(): Promise<void>
+  killSync(): void
 }
 
 /** Test seams replace process launch and detection, not the backend/session plumbing. */
@@ -259,16 +261,58 @@ async function terminate(child: ReturnType<typeof spawn>): Promise<void> {
   if (timer !== undefined) clearTimeout(timer)
 }
 
+/** dshd 的启动播报是信息，不是界面错误；其余 stderr 仍走 host.stderr。 */
+export function isDshdInfoLine(line: string): boolean {
+  const text = line.trim()
+  if (text === '') return false
+  if (/^工具表[：:]\s*(?:compact|full|merged|lazy)(?:\s|$)/u.test(text)) return true
+  if (/^工具\s+\d+\s+个，\d+\s+字节（形态\s+(?:compact|full|merged|lazy)）/u.test(text)) return true
+  if (/^policy\s+(?:allow|ask|deny)(?:\s|（|$)/u.test(text)) return true
+  return false
+}
+
+export function forwardDshdStderr(line: string, host: Pick<BackendHost, 'debug' | 'stderr'>): void {
+  if (isDshdInfoLine(line)) host.debug(`dsh-go: dshd info (${line})`)
+  else host.stderr?.(line)
+}
+
+/**
+ * `dshd serve` 的 argv。
+ *
+ * **策略属于宿主，不属于插件。** 宿主的产品默认是 `allow`（`cmd/dshd/serve.go`，
+ * 用户在 2026-11-04 明确要求默认完全权限），所以这里在 `DSH_GO_POLICY` 未设时
+ * **一个 `--policy` 都不传**，让那个默认原样生效。
+ *
+ * 反面教材（t12 修的回归）：本函数以前写 `env.DSH_GO_POLICY?.trim() || 'ask'` 并且
+ * 无条件 append，于是"没配"就等于插件替宿主把 `allow` 覆盖成 `ask`——launcher 里
+ * 删不删那行都没用，属于脆耦合（宿主改默认也得跟着改插件）。
+ *
+ * 显式值（`deny` / `ask` / `allow`）仍然原样透传：测试与受控环境要能钉死档位，
+ * 只是"未设"不再等于"ask"。空串/纯空白按未设处理，非法值 refuse 而不是静默降级。
+ *
+ * @param home - `DSH_GO_HOME`（必填，调用方已校验）。
+ * @param env - 启动环境。
+ * @returns 传给 `dshd` 的参数数组（不含可执行文件本身）。
+ * @throws 当 `DSH_GO_POLICY` 既非空也不在 `allow|ask|deny` 内。
+ */
+export function dshdServeArgs(home: string, env: NodeJS.ProcessEnv): string[] {
+  const args = ['serve', '--home', home, '--addr', '127.0.0.1:0']
+  const policy = env.DSH_GO_POLICY?.trim()
+  if (policy !== undefined && policy !== '') {
+    if (!['allow', 'ask', 'deny'].includes(policy)) throw new Error(`dsh-go: unsupported DSH_GO_POLICY ${JSON.stringify(policy)}`)
+    args.push('--policy', policy)
+  }
+  const model = env.DSH_GO_MODEL?.trim()
+  if (model !== undefined && model !== '') args.push('--model', model)
+  return args
+}
+
 async function launchDshd(cwd: string, host: BackendHost, options: DshGoBackendOptions): Promise<DshGoSupervisor> {
   const env = options.env ?? process.env
   const home = env.DSH_GO_HOME?.trim()
   if (home === undefined || home === '') throw new Error('dsh-go: DSH_GO_HOME is required')
   const executable = env.DSH_GO_DSHD?.trim() || 'dshd'
-  const policy = env.DSH_GO_POLICY?.trim() || 'ask'
-  if (!['allow', 'ask', 'deny'].includes(policy)) throw new Error(`dsh-go: unsupported DSH_GO_POLICY ${JSON.stringify(policy)}`)
-  const args = ['serve', '--home', home, '--addr', '127.0.0.1:0', '--policy', policy]
-  const model = env.DSH_GO_MODEL?.trim()
-  if (model !== undefined && model !== '') args.push('--model', model)
+  const args = dshdServeArgs(home, env)
   const child = spawn(executable, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
   child.on('error', error => { host.debug(`dsh-go: dshd process error (${messageOf(error)})`) })
   let stderr = ''
@@ -276,7 +320,7 @@ async function launchDshd(cwd: string, host: BackendHost, options: DshGoBackendO
     stderr += chunk.toString('utf8')
     const lines = stderr.split(/\r?\n/u)
     stderr = lines.pop() ?? ''
-    for (const line of lines) if (line !== '') host.stderr?.(line)
+    for (const line of lines) if (line !== '') forwardDshdStderr(line, host)
   })
   const readyLine = await new Promise<string>((resolveReady, reject) => {
     let stdout = ''
@@ -325,6 +369,11 @@ async function launchDshd(cwd: string, host: BackendHost, options: DshGoBackendO
         await transport.close()
         await terminate(child)
       },
+      killSync: () => {
+        if (closed) return
+        closed = true
+        child.kill()
+      },
     }
   } catch (error) {
     await terminate(child)
@@ -352,6 +401,12 @@ async function detectDshd(host: BackendHost, options: DshGoBackendOptions): Prom
     host.debug(`dsh-go: detection failed (${messageOf(error)})`)
     return { installed: false, hint: host.locale() === 'zh' ? '未找到 dshd；安装 DSH-GO 或设置 DSH_GO_DSHD。' : 'dshd was not found; install DSH-GO or set DSH_GO_DSHD.' }
   }
+}
+
+const traceQuit = (message: string): void => {
+  if (process.env.DSH_GO_QUIT_TRACE !== '1') return
+  process.stderr.write(`[quit-trace ${Date.now()}] ${message}
+`)
 }
 
 class DshGoSession implements AgentSession {
@@ -384,6 +439,7 @@ class DshGoSession implements AgentSession {
   private readonly titles: ReturnType<typeof createDshGoRename>
   private readonly colors: ReturnType<typeof createDshGoColor>
   private readonly initCapability: ReturnType<typeof createDshGoInitCapability>
+  private readonly workspacePort: DshGoWorkspacePort
   private readonly unsubscribeTasks: () => void
   private readonly unsubscribeGoals: () => void
   private transcriptGeneration = 0
@@ -410,8 +466,11 @@ class DshGoSession implements AgentSession {
       emit: events => { this.emit(events, false) },
     })
     const emit = (events: readonly AgentEvent[]): void => { this.emit(events, false) }
-    this.effort = createDshGoEffort(this.transport, this.sessionId, { emit })
-    this.modes = createDshGoModes(this.transport, this.sessionId, { emit })
+    // Effort and permission labels are DSH-GO's own copy, written in the
+    // language the host is showing (backend contract, `locale()`). Passing the
+    // live accessor — not a snapshot — is what makes `/lang` reach them.
+    this.effort = createDshGoEffort(this.transport, this.sessionId, { emit, locale: () => this.locale() })
+    this.modes = createDshGoModes(this.transport, this.sessionId, { emit, locale: () => this.locale() })
     this.goals = createDshGoGoals(this.transport, this.sessionId)
     this.tasks = createDshGoTasks(this.transport, this.sessionId)
     this.subagents = createDshGoSubagents()
@@ -424,10 +483,17 @@ class DshGoSession implements AgentSession {
     this.titles = createDshGoRename(this.transport, this.sessionId, { emit })
     this.colors = createDshGoColor(this.transport, this.sessionId, { emit })
     this.initCapability = createDshGoInitCapability(this.transport, requestedCwd)
+    this.workspacePort = createDshGoWorkspacePort(this.transport, this.sessionId, requestedCwd)
+    installDshGoWorkspacePort(this.workspacePort)
     this.unsubscribeTasks = this.tasks.subscribe(emit)
     this.unsubscribeGoals = this.goals.subscribe(event => { emit([event]) })
     this.capabilities = {
-      native: {},
+      native: {
+        get dsh() {
+          debugLog({ event: 'dshgo.native.dsh.get', backendId: DSH_GO_BACKEND_ID })
+          return undefined
+        },
+      },
       pendingRetraction: { remove: clientMessageId => this.placement.retract(clientMessageId) },
       permissions: {
         respond: (requestId, decision) => { this.respondPermission(requestId, decision) },
@@ -466,6 +532,10 @@ class DshGoSession implements AgentSession {
       color: this.colors.capability,
       init: this.initCapability,
     }
+    // The non-DSH workspace port is a real session capability. Expose the
+    // object itself (not a boolean flag): the TUI core reads these methods
+    // through the session capability, across the host-entry IPC boundary.
+    Object.assign(this.capabilities, { workspace: this.workspacePort })
   }
 
   get status(): AgentSessionStatus {
@@ -497,6 +567,11 @@ class DshGoSession implements AgentSession {
       this.currentModel = defaultModel
       this.effort.noteModel(defaultModel)
     }
+    // Populate the real command/registry cache once the IPC session is open;
+    // /workspace remove|resolve must not race an empty cache.
+    await this.workspacePort.refreshCommands().catch(error => {
+      this.debug(`dsh-go: workspace commands refresh failed (${messageOf(error)})`)
+    })
     const goalStatePromise = this.goals.get().catch(error => {
       this.debug(`dsh-go: initial goal read failed (${messageOf(error)})`)
       return undefined
@@ -561,8 +636,12 @@ class DshGoSession implements AgentSession {
 
   async dispose(): Promise<void> {
     if (this.disposed) return
+    traceQuit('backend.dispose:start')
     this.disposed = true
     this.state = 'disposed'
+    installDshGoWorkspacePort(undefined)
+    Reflect.deleteProperty(this.capabilities, 'workspace')
+    traceQuit('backend.dispose:workspace-port-cleared')
     this.transcriptGeneration += 1
     this.resetFrames = undefined
     this.unsubscribeTasks()
@@ -580,15 +659,20 @@ class DshGoSession implements AgentSession {
       this.debug(`dsh-go: side.close during dispose failed (${messageOf(error)})`)
     })
     try {
+      traceQuit('backend.dispose:await-side-titles-colors')
       await Promise.all([sideClose, this.titles.idle(), this.colors.idle()])
+      traceQuit('backend.dispose:await-session')
       await session?.dispose()
+      traceQuit('backend.dispose:session-done')
     } finally {
       this.unsubscribeBroken()
       this.listeners.clear()
       this.backlog.length = 0
       this.replayHistory = undefined
       this.pending.clear()
+      traceQuit('backend.dispose:await-release')
       await this.release()
+      traceQuit('backend.dispose:end')
     }
   }
 
@@ -869,16 +953,56 @@ export function dshGoResumeCommand(sessionId: string): string {
 }
 
 /** Create an independently owned backend; the default export is the bundle handler. */
+async function ensureWorkspaceBinding(transport: { call<T = unknown>(method: string, params: Readonly<Record<string, unknown>>): Promise<T> }, cwd: string): Promise<void> {
+  try {
+    const resolved = record(await transport.call<unknown>('workspace.resolve', { uri: cwd }))
+    if (record(record(resolved)?.workspace)?.workspaceId !== undefined) return
+  } catch {
+    // An unregistered path is the create case; workspace.create below decides.
+  }
+  try {
+    await transport.call('workspace.create', { request: { path: cwd } })
+  } catch (error) {
+    throw new Error(`dsh-go: workspace binding failed for ${JSON.stringify(cwd)}: ${messageOf(error)}`, { cause: error })
+  }
+}
+
 export function createDshGoBackend(options: DshGoBackendOptions = {}): AgentBackend {
   let catalogHost: BackendHost | undefined
   const volatile = { data: EMPTY_PREFS as PrefsData }
   const runtimes = new Map<string, Promise<SupervisorRuntime>>()
+  const liveRuntimes = new Set<SupervisorRuntime>()
+  process.once('exit', () => { for (const runtime of liveRuntimes) { try { runtime.supervisor.killSync() } catch { /* process already exiting */ } } })
   const launch = options.launch ?? ((cwd: string, host: BackendHost) => launchDshd(cwd, host, options))
   const remember = (host: BackendHost): void => { catalogHost = host }
   const fallbackHost = (): BackendHost => catalogHost ?? {
     cwd: process.cwd(), locale: () => 'en' as const, debug: () => undefined, warn: () => undefined,
   }
+
+  const withWorkspace = async <T>(cwd: string, run: (port: DshGoWorkspacePort) => Promise<T>): Promise<T> => {
+    const host = fallbackHost()
+    const lease = await acquire(cwd, host)
+    try {
+      return await run(createDshGoWorkspacePort(lease.transport, '', cwd))
+    } finally {
+      await lease.release()
+    }
+  }
+  let workspaceCommands: readonly import('./workspace.js').DshGoWorkspaceCommand[] = []
+  const workspace: DshGoWorkspacePort = {
+    list: async cwd => withWorkspace(cwd, port => port.list(cwd)),
+    listRegistry: async () => withWorkspace(fallbackHost().cwd, port => port.listRegistry()),
+    resolve: async (uri, cwd = fallbackHost().cwd) => withWorkspace(cwd, port => port.resolve(uri)),
+    switch: async (target, cwd = target.cwd) => withWorkspace(cwd, port => port.switch(target)),
+    renameAt: async (cwd, title) => withWorkspace(cwd, port => port.renameAt(cwd, title)),
+    rename: async (title, cwd = fallbackHost().cwd) => withWorkspace(cwd, port => port.rename(title)),
+    remove: async cwd => withWorkspace(cwd, port => port.remove(cwd)),
+    commands: () => workspaceCommands,
+    refreshCommands: async () => undefined,
+    runCommand: async (name, input, cwd = fallbackHost().cwd) => withWorkspace(cwd, port => port.runCommand(name, input, cwd)),
+  }
   const closeRuntime = (runtime: SupervisorRuntime): Promise<void> => {
+    liveRuntimes.delete(runtime)
     runtime.closePromise ??= runtime.supervisor.close()
     return runtime.closePromise
   }
@@ -892,6 +1016,7 @@ export function createDshGoBackend(options: DshGoBackendOptions = {}): AgentBack
         reused = false
         pending = launch(cwd, host).then(supervisor => {
           const runtime: SupervisorRuntime = { supervisor, refs: 0, broken: false, brokenListeners: new Set() }
+          liveRuntimes.add(runtime)
           runtime.unsubscribeExit = supervisor.onExit?.(error => {
             if (runtime.broken) return
             runtime.broken = true
@@ -967,8 +1092,18 @@ export function createDshGoBackend(options: DshGoBackendOptions = {}): AgentBack
       // A resume failure propagates from session.load; there is no create fallback.
       session = new DshGoSession(lease.transport, sessionId, cwd, lease.release, lease.onBroken, host.debug, host.locale, explicitModel)
       await session.start()
+      await ensureWorkspaceBinding(lease.transport, cwd)
       return session
     } catch (error) {
+      debugLog({
+        event: 'backend.open.error',
+        target,
+        cwd,
+        explicitModel,
+        error: error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack, ...(Object.hasOwn(error, 'code') ? { code: (error as { code?: unknown }).code } : {}), ...(Object.hasOwn(error, 'hint') ? { hint: (error as { hint?: unknown }).hint } : {}), ...(Object.hasOwn(error, 'status') ? { status: (error as { status?: unknown }).status } : {}), ...(Object.hasOwn(error, 'retryable') ? { retryable: (error as { retryable?: unknown }).retryable } : {}) }
+          : String(error),
+      })
       if (session !== undefined) await session.dispose()
       else await lease.release()
       throw error
@@ -1045,6 +1180,7 @@ export function createDshGoBackend(options: DshGoBackendOptions = {}): AgentBack
     },
     open,
     catalog,
+    workspace,
     launch: {
       sessionPrefs: host => {
         remember(host)
@@ -1052,7 +1188,7 @@ export function createDshGoBackend(options: DshGoBackendOptions = {}): AgentBack
       },
       resumeCommand: dshGoResumeCommand,
     },
-  }
+  } as AgentBackend & { workspace: DshGoWorkspacePort }
 }
 
 export const backend: AgentBackend = createDshGoBackend()

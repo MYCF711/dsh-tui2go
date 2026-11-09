@@ -1,5 +1,14 @@
 import WebSocket, { type RawData } from 'ws'
+import { appendFileSync } from 'node:fs'
 import { dshGoSideQueryFrame, dshGoSideQueryResult } from './events.js'
+
+export function debugLog(event: Record<string, unknown>): void {
+  const file = process.env.DSH_GO_DEBUG_LOG
+  if (file === undefined || file.trim() === '') return
+  try {
+    appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n')
+  } catch { /* diagnostics must never break the backend */ }
+}
 
 /** Decimal JSON integer, kept as text so a random 63-bit host epoch is lossless. */
 export type JournalEpoch = string
@@ -213,8 +222,10 @@ function responseError(status: number, value: unknown): DshGoTransportError | un
     typeof detail.code !== 'string' || typeof detail.message !== 'string'
     || typeof detail.hint !== 'string' || typeof detail.retryable !== 'boolean'
   ) {
+    debugLog({ event: 'transport.response.invalid-error-envelope', status, body })
     throw new Error('dsh-go: malformed four-field error envelope')
   }
+  debugLog({ event: 'transport.response.error', status, code: detail.code, message: detail.message, hint: detail.hint, retryable: detail.retryable, body })
   return new DshGoTransportError(status, body, detail)
 }
 
@@ -274,13 +285,21 @@ export class DshGoTransport {
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<T> {
     if (!/^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$/u.test(method)) throw new Error('dsh-go: invalid API method')
-    const response = await fetch(endpoint(this.baseUrl, `/api/${method}`), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', cookie: this.cookie },
-      body: JSON.stringify(params),
-      signal: options.signal,
-    })
+    const started = Date.now()
+    let response: Response
+    try {
+      response = await fetch(endpoint(this.baseUrl, `/api/${method}`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: this.cookie },
+        body: JSON.stringify(params),
+        signal: options.signal,
+      })
+    } catch (error) {
+      debugLog({ event: 'transport.call.error', method, params, elapsedMs: Date.now() - started, error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error) })
+      throw error
+    }
     const body = await responseJson(response)
+    debugLog({ event: 'transport.call.response', method, status: response.status, ok: response.ok, elapsedMs: Date.now() - started, body })
     const error = responseError(response.status, body)
     if (error !== undefined) throw error
     if (!response.ok) throw new Error(`dsh-go: ${method} failed with HTTP ${response.status}`)

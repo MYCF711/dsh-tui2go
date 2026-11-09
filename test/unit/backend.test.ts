@@ -245,6 +245,14 @@ class BackendFixture {
       this.result(response, { sessionId: id })
       return
     }
+    if (method === 'workspace.resolve') {
+      this.result(response, { workspace: undefined })
+      return
+    }
+    if (method === 'workspace.create') {
+      this.result(response, { workspace: { workspaceId: 'w', path: String(body.request?.path ?? ''), title: 'w' } })
+      return
+    }
     if (method === 'session.list') {
       this.result(response, { sessions: [...this.sessions.values()].map(session => ({
         id: session.id, title: session.title, cwd: session.cwd, updatedAt: session.updatedAt,
@@ -373,7 +381,7 @@ test('backend assembly performs catalog, lifecycle, events, approval, cancellati
   assert.deepEqual(manifest.capabilities, [
     'native', 'permissions', 'questions', 'pendingRetraction', 'models', 'effort', 'modes',
     'goals', 'compact', 'fork', 'rewind', 'tasks', 'subagents', 'images', 'transcript',
-    'context', 'mcp', 'sideQuery', 'auth', 'rename', 'color', 'init',
+    'context', 'mcp', 'sideQuery', 'auth', 'rename', 'color', 'init', 'workspace',
   ])
   assert.deepEqual(await backend.detect(host()), { installed: true, auth: 'unknown', version: '0.2.2' })
   assert.equal(backend.launch?.resumeCommand('A'), 'dsh-tui --backend dsh-go --resume A')
@@ -395,7 +403,7 @@ test('backend assembly performs catalog, lifecycle, events, approval, cancellati
   assert.equal(a.cwd, CWD)
   assert.deepEqual(Object.keys(a.capabilities).sort(), [
     'auth', 'color', 'compact', 'context', 'effort', 'fork', 'goals', 'images', 'init', 'mcp', 'models', 'modes',
-    'native', 'pendingRetraction', 'permissions', 'questions', 'rename', 'rewind', 'sideQuery', 'subagents', 'tasks', 'transcript',
+    'native', 'pendingRetraction', 'permissions', 'questions', 'rename', 'rewind', 'sideQuery', 'subagents', 'tasks', 'transcript', 'workspace',
   ])
   // 模型选择：目录来自 models.list，当前值来自 session.load；切一次必须真发
   // session.setModel 并把 current() 跟着改（否则 `/model` 显示的永远是旧值）。
